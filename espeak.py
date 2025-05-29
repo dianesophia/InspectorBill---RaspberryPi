@@ -1,0 +1,123 @@
+import firebase_admin
+from firebase_admin import credentials, db
+import cv2
+import numpy as np
+import time
+import argparse
+import threading
+import os
+from ultralytics import YOLO
+from pathlib import Path
+
+
+# Initialize Firebase app
+cred = credentials.Certificate("firebase_key.json")
+firebase_admin.initialize_app(cred, {
+    'databaseURL': 'https://inspectorbill-39299-default-rtdb.asia-southeast1.firebasedatabase.app/'
+})
+
+
+# === Arguments ===
+parser = argparse.ArgumentParser()
+parser.add_argument("--weights", required=True, help="Path to custom YOLOv8 model (e.g., best.pt)")
+parser.add_argument("--thresh", default=0.5, help="Minimum confidence threshold")
+parser.add_argument("--res", default="416x416", help="Resolution WxH (e.g. 416x416)")
+args = parser.parse_args()
+
+# === Configs ===
+min_thresh = float(args.thresh)
+resW, resH = map(int, args.res.split("x"))
+
+# === TTS using espeak ===
+def speak(text):
+    try:
+        os.system(f'espeak "{text}"')
+    except:
+        pass
+
+# === Load Model ===
+model_path = args.weights
+if not Path(model_path).exists():
+    print(f"[ERROR] Model not found: {model_path}")
+    exit(1)
+
+model = YOLO(model_path)
+
+# === Open Camera ===
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, resW)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resH)
+
+# === Random colors for bounding boxes ===
+bbox_colors = [tuple(np.random.randint(0, 256, 3).tolist()) for _ in range(100)]
+
+# === Detection Loop ===
+print("[INFO] Starting detection with custom YOLOv8 model...")
+
+last_spoken_time = 0
+speak_interval = 10  # Seconds
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("[ERROR] Camera not accessible.")
+        break
+
+    # Resize frame to match model input
+    frame_resized = cv2.resize(frame, (resW, resH))
+
+    # Run inference
+    results = model.predict(source=frame_resized, conf=min_thresh, verbose=False)
+
+    detected_objects = []
+
+    for result in results:
+        if result.boxes is not None:
+            boxes = result.boxes.xyxy.cpu().numpy()
+            classes = result.boxes.cls.cpu().numpy().astype(int)
+
+            for i in range(len(boxes)):
+                xmin, ymin, xmax, ymax = map(int, boxes[i])
+                class_id = classes[i]
+
+                # Handle unknown labels safely
+                try:
+                    class_name = model.names[class_id]
+                except KeyError:
+                    class_name = f"class_{class_id}"
+
+                detected_objects.append(class_name)
+
+                # Draw bounding box and label
+                color = bbox_colors[class_id % len(bbox_colors)]
+                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, 1)
+                cv2.putText(frame, class_name, (xmin, ymin - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+
+    # Speak every X seconds only
+    current_time = time.time()
+    if detected_objects and (current_time - last_spoken_time) > speak_interval:
+        last_spoken_time = current_time
+        description = ', '.join(set(detected_objects))
+
+        # === Send to Firebase ===
+        try:
+            db.reference('detections').push({
+                'timestamp': time.time(),
+                'objects': list(set(detected_objects))
+            })
+        except Exception as e:
+            print(f"[FIREBASE ERROR] {e}")
+
+        threading.Thread(target=speak, args=(f" {description}",), daemon=True).start()
+
+    # Show frame
+    cv2.imshow("Inspector Bill Detection (Press 'q' to quit)", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
+
+    time.sleep(0.01)  # Light FPS limit for Pi
+
+# === Cleanup ===
+cap.release()
+cv2.destroyAllWindows()

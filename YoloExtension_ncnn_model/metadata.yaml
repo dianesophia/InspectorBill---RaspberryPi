@@ -1,0 +1,25 @@
+description: Ultralytics YoloExtention model trained on ../content/drive/MyDrive/NewMoney_dataset/data.yaml
+author: Ultralytics
+date: '2025-04-29T09:23:03.608242'
+version: 8.3.119
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: detect
+batch: 1
+imgsz:
+- 640
+- 640
+names:
+  0: No Detection
+  1: 100 pesos
+  2: 1000 pesos
+  3: 20 pesos
+  4: 200 pesos
+  5: 50 pesos
+  6: 500 pesos
+  7: not money
+args:
+  batch: 1
+  half: false
+channels: 3
